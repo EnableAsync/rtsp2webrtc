@@ -12,9 +12,10 @@ extern "C" {
 #include <libavformat/avformat.h>
 }
 
-// Callback: receives NAL units (without start code), codec_id, and extradata
+// Callback: receives NAL units (without start code), codec_id, keyframe flag, and PTS (90kHz)
 using NalCallback = std::function<void(const uint8_t *data, size_t size,
-                                       AVCodecID codec_id, bool is_keyframe)>;
+                                       AVCodecID codec_id, bool is_keyframe,
+                                       int64_t pts)>;
 
 class RTSPReader {
 public:

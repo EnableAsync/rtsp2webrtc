@@ -1,4 +1,5 @@
 #include "rtsp_reader.h"
+#include <chrono>
 #include <cstring>
 #include <iostream>
 
@@ -71,8 +72,11 @@ void RTSPReader::readLoop() {
     std::cout << "[RTSPReader] Stream opened: "
               << avcodec_get_name(codec_id_) << "\n";
 
-    // Read loop
+    // Read loop with real-time pacing
     AVPacket *pkt = av_packet_alloc();
+    int64_t first_pts = AV_NOPTS_VALUE;
+    std::chrono::steady_clock::time_point first_send_time;
+
     while (running_) {
         ret = av_read_frame(fmt_ctx_, pkt);
         if (ret < 0) {
@@ -84,8 +88,28 @@ void RTSPReader::readLoop() {
         }
         if (pkt->stream_index == video_stream_idx_ && nal_cb_) {
             bool is_keyframe = (pkt->flags & AV_PKT_FLAG_KEY) != 0;
-            // Pass entire Annex-B frame (all NALs with start codes)
-            nal_cb_(pkt->data, pkt->size, codec_id_, is_keyframe);
+            // PTS in stream time_base (90kHz for RTSP video)
+            int64_t pts = pkt->pts != AV_NOPTS_VALUE ? pkt->pts : pkt->dts;
+
+            // Pacing: don't send faster than real-time to avoid burst drops
+            if (pts != AV_NOPTS_VALUE) {
+                if (first_pts == AV_NOPTS_VALUE) {
+                    first_pts = pts;
+                    first_send_time = std::chrono::steady_clock::now();
+                } else {
+                    auto elapsed_pts_ms = (pts - first_pts) / 90; // 90kHz → ms
+                    auto elapsed_real = std::chrono::steady_clock::now() - first_send_time;
+                    auto elapsed_real_ms = std::chrono::duration_cast<
+                        std::chrono::milliseconds>(elapsed_real).count();
+                    auto ahead_ms = elapsed_pts_ms - elapsed_real_ms;
+                    if (ahead_ms > 5) {
+                        std::this_thread::sleep_for(
+                            std::chrono::milliseconds(ahead_ms - 2));
+                    }
+                }
+            }
+
+            nal_cb_(pkt->data, pkt->size, codec_id_, is_keyframe, pts);
         }
         av_packet_unref(pkt);
     }
@@ -127,7 +151,7 @@ void RTSPReader::parseAnnexB(const uint8_t *data, size_t size,
 
         if (nal_end > nal_start) {
             nal_cb_(data + nal_start, nal_end - nal_start, codec_id_,
-                    is_keyframe);
+                    is_keyframe, AV_NOPTS_VALUE);
         }
         i = nal_end;
     }

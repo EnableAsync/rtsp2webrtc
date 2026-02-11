@@ -65,14 +65,12 @@ StreamSource &StreamManager::getOrCreateSource(const std::string &rtsp_url) {
     StreamSource *src_ptr = src.get();
     src->reader->setNalCallback(
         [src_ptr](const uint8_t *data, size_t size, AVCodecID codec_id,
-                  bool is_keyframe) {
+                  bool is_keyframe, int64_t pts) {
             if (codec_id == AV_CODEC_ID_HEVC) {
                 // Need transcoding
                 if (!src_ptr->transcoder) {
                     src_ptr->transcoder = std::make_unique<Transcoder>();
-                    // Get codec params from reader for init
                     auto *reader = src_ptr->reader.get();
-                    // Initialize with extradata from the stream
                     AVCodecParameters *params = avcodec_parameters_alloc();
                     params->codec_id = AV_CODEC_ID_HEVC;
                     params->codec_type = AVMEDIA_TYPE_VIDEO;
@@ -99,10 +97,9 @@ StreamSource &StreamManager::getOrCreateSource(const std::string &rtsp_url) {
                             }
                         });
                 }
-                // Data is already Annex-B, feed directly to transcoder
                 src_ptr->transcoder->feed(data, size, 0, 0);
             } else {
-                // H.264 — direct pass-through (whole Annex-B frame)
+                // H.264 — direct pass-through
                 if (is_keyframe) {
                     std::string types;
                     for (size_t i = 0; i+4 < size; i++)
@@ -118,11 +115,11 @@ StreamSource &StreamManager::getOrCreateSource(const std::string &rtsp_url) {
                     memcpy(buf.data() + extra.size(), data, size);
                     std::lock_guard<std::mutex> lock(src_ptr->sessions_mtx);
                     for (auto &sess : src_ptr->sessions)
-                        sess->sendFrame(buf.data(), buf.size(), true);
+                        sess->sendFrame(buf.data(), buf.size(), true, pts);
                 } else {
                     std::lock_guard<std::mutex> lock(src_ptr->sessions_mtx);
                     for (auto &sess : src_ptr->sessions)
-                        sess->sendFrame(data, size, is_keyframe);
+                        sess->sendFrame(data, size, is_keyframe, pts);
                 }
             }
         });

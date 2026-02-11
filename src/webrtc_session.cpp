@@ -100,12 +100,12 @@ std::string WebRTCSession::handleOffer(const std::string &sdp_offer,
     rtp_config_ = rtp;
 
     auto packetizer = std::make_shared<rtc::H264RtpPacketizer>(
-        rtc::NalUnit::Separator::LongStartSequence, rtp);
+        rtc::NalUnit::Separator::StartSequence, rtp, 1400);
 
     sr_reporter_ = std::make_shared<rtc::RtcpSrReporter>(rtp);
     packetizer->addToChain(sr_reporter_);
 
-    auto nack_responder = std::make_shared<rtc::RtcpNackResponder>();
+    auto nack_responder = std::make_shared<rtc::RtcpNackResponder>(2048);
     sr_reporter_->addToChain(nack_responder);
 
     track_->setMediaHandler(packetizer);
@@ -153,7 +153,7 @@ std::string WebRTCSession::handleOffer(const std::string &sdp_offer,
 }
 
 void WebRTCSession::sendFrame(const uint8_t *data, size_t size,
-                               bool is_keyframe) {
+                               bool is_keyframe, int64_t pts) {
     std::lock_guard<std::mutex> lock(send_mtx_);
     if (!track_ || !track_->isOpen())
         return;
@@ -163,11 +163,19 @@ void WebRTCSession::sendFrame(const uint8_t *data, size_t size,
         if (!is_keyframe)
             return;
         got_keyframe_ = true;
+        if (pts >= 0)
+            first_pts_ = pts;
         std::cout << "[WebRTC] First keyframe, starting send\n";
     }
 
-    // One timestamp per frame (3000 = 90kHz / 30fps)
-    timestamp_ += 3000;
+    // Use actual PTS from RTSP for accurate RTP timestamps
+    if (pts >= 0 && first_pts_ >= 0) {
+        // PTS is already in 90kHz (RTSP video time_base)
+        timestamp_ = static_cast<uint32_t>(pts - first_pts_);
+    } else {
+        // Fallback: estimate 3000 ticks per frame (30fps)
+        timestamp_ += 3000;
+    }
     rtp_config_->timestamp = timestamp_;
 
     // Data is already Annex-B (start codes included)
