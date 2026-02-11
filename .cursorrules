@@ -1,0 +1,10 @@
+- 所有交互与 Commit Message 必须极简。为追求简洁，可忽略语法。
+
+# Git
+- commit message 使用中文，必须极简。为追求简洁，可忽略语法。句末不要有句号。
+- commit message 建议格式
+  - `fix: ...`
+  - `feat: ...`
+  - `refactor: ...`
+  - `docs: ...`
+  - `exp: ...`
