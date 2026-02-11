@@ -20,6 +20,8 @@ public:
     StreamManager();
     ~StreamManager();
 
+    void setPublicIP(const std::string &ip) { public_ip_ = ip; }
+
     // Create a new WebRTC session for the given RTSP URL
     // Returns SDP answer
     std::string createSession(const std::string &rtsp_url,
@@ -33,4 +35,5 @@ private:
 
     std::unordered_map<std::string, std::unique_ptr<StreamSource>> sources_;
     std::mutex sources_mtx_;
+    std::string public_ip_;
 };

@@ -57,11 +57,26 @@ async function startPlay() {
         pc.addTransceiver('video', { direction: 'recvonly' });
 
         pc.ontrack = (ev) => {
-            setStatus('Receiving video');
-            document.getElementById('video').srcObject = ev.streams[0];
+            console.log('[ontrack] kind=' + ev.track.kind + ' state=' + ev.track.readyState + ' streams=' + ev.streams.length);
+            const stream = ev.streams[0] || new MediaStream([ev.track]);
+            const video = document.getElementById('video');
+            video.srcObject = stream;
+            setStatus('Track received, waiting for frames...');
+
+            ev.track.onmute = () => console.log('[track] muted');
+            ev.track.onunmute = () => console.log('[track] unmuted');
+            ev.track.onended = () => console.log('[track] ended');
         };
 
+        const video = document.getElementById('video');
+        video.onloadedmetadata = () => console.log('[video] loadedmetadata ' + video.videoWidth + 'x' + video.videoHeight);
+        video.onplaying = () => { console.log('[video] playing'); setStatus('Playing'); };
+        video.onstalled = () => console.log('[video] stalled');
+        video.onerror = (e) => console.log('[video] error', video.error);
+        video.onwaiting = () => console.log('[video] waiting');
+
         pc.oniceconnectionstatechange = () => {
+            console.log('[ICE] ' + pc.iceConnectionState);
             setStatus('ICE: ' + pc.iceConnectionState);
             if (pc.iceConnectionState === 'disconnected' || pc.iceConnectionState === 'failed') {
                 stopPlay();
@@ -79,6 +94,8 @@ async function startPlay() {
             };
         });
 
+        console.log('[offer SDP]', pc.localDescription.sdp);
+
         const resp = await fetch('/api/offer', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -91,7 +108,18 @@ async function startPlay() {
         if (!resp.ok) throw new Error('Server error: ' + resp.status);
         const answer = await resp.json();
         await pc.setRemoteDescription(new RTCSessionDescription(answer));
-        setStatus('Connected');
+        setStatus('Connected — checking stats...');
+
+        // Periodic stats to check incoming RTP
+        const statsTimer = setInterval(async () => {
+            if (!pc) { clearInterval(statsTimer); return; }
+            const stats = await pc.getStats();
+            stats.forEach(s => {
+                if (s.type === 'inbound-rtp' && s.kind === 'video') {
+                    console.log('[stats] pkts=' + s.packetsReceived + ' bytes=' + s.bytesReceived + ' frames=' + (s.framesDecoded||0) + ' dropped=' + (s.framesDropped||0) + ' nacks=' + (s.nackCount||0) + ' pli=' + (s.pliCount||0) + ' decoder=' + (s.decoderImplementation||'none') + ' framesRcvd=' + (s.framesReceived||0) + ' codecId=' + (s.codecId||''));
+                }
+            });
+        }, 2000);
     } catch (e) {
         setStatus('Error: ' + e.message);
         stopPlay();
@@ -112,12 +140,19 @@ function stopPlay() {
 
 int main(int argc, char *argv[]) {
     int port = 8080;
+    std::string public_ip;
     if (argc > 1)
         port = std::atoi(argv[1]);
+    if (argc > 2)
+        public_ip = argv[2];
 
     std::cout << "rtsp2webrtc starting on port " << port << "\n";
+    if (!public_ip.empty())
+        std::cout << "Public IP: " << public_ip << "\n";
 
     StreamManager manager;
+    if (!public_ip.empty())
+        manager.setPublicIP(public_ip);
     httplib::Server svr;
 
     // Serve web player

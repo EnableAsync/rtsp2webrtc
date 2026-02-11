@@ -84,7 +84,8 @@ void RTSPReader::readLoop() {
         }
         if (pkt->stream_index == video_stream_idx_ && nal_cb_) {
             bool is_keyframe = (pkt->flags & AV_PKT_FLAG_KEY) != 0;
-            parseAnnexB(pkt->data, pkt->size, is_keyframe);
+            // Pass entire Annex-B frame (all NALs with start codes)
+            nal_cb_(pkt->data, pkt->size, codec_id_, is_keyframe);
         }
         av_packet_unref(pkt);
     }

@@ -1,6 +1,8 @@
 #include "stream_manager.h"
 #include <algorithm>
+#include <cstdio>
 #include <iostream>
+#include <thread>
 
 StreamManager::StreamManager() {}
 
@@ -13,10 +15,34 @@ StreamManager::~StreamManager() {
 
 std::string StreamManager::createSession(const std::string &rtsp_url,
                                           const std::string &sdp_offer) {
-    auto session = std::make_shared<WebRTCSession>();
-    std::string answer = session->handleOffer(sdp_offer);
-
+    // Create source first to obtain stream info (SPS/PPS)
     StreamSource &source = getOrCreateSource(rtsp_url);
+
+    // Wait for extradata (SPS/PPS) — available once RTSP stream opens
+    std::string profile;
+    for (int i = 0; i < 50; i++) {
+        const auto &extra = source.reader->extradata();
+        if (!extra.empty()) {
+            // Find SPS NAL (type 7) in Annex-B, extract profile-level-id
+            for (size_t j = 0; j + 7 < extra.size(); j++) {
+                if (extra[j]==0 && extra[j+1]==0 && extra[j+2]==0 && extra[j+3]==1
+                    && (extra[j+4] & 0x1F) == 7) {
+                    char buf[7];
+                    snprintf(buf, sizeof(buf), "%02x%02x%02x",
+                             extra[j+5], extra[j+6], extra[j+7]);
+                    profile = buf;
+                    std::cout << "[SPS] profile-level-id=" << profile << "\n";
+                    break;
+                }
+            }
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+
+    auto session = std::make_shared<WebRTCSession>();
+    std::string answer = session->handleOffer(sdp_offer, public_ip_, profile);
+
     {
         std::lock_guard<std::mutex> lock(source.sessions_mtx);
         source.sessions.push_back(session);
@@ -69,24 +95,34 @@ StreamSource &StreamManager::getOrCreateSource(const std::string &rtsp_url) {
                             std::lock_guard<std::mutex> lock(
                                 src_ptr->sessions_mtx);
                             for (auto &sess : src_ptr->sessions) {
-                                sess->sendNal(h264_data, h264_size, kf);
+                                sess->sendFrame(h264_data, h264_size, kf);
                             }
                         });
                 }
-                // Feed raw packet with start codes for decoder
-                // Reconstruct Annex-B with start code
-                std::vector<uint8_t> annexb(4 + size);
-                annexb[0] = 0;
-                annexb[1] = 0;
-                annexb[2] = 0;
-                annexb[3] = 1;
-                memcpy(annexb.data() + 4, data, size);
-                src_ptr->transcoder->feed(annexb.data(), annexb.size(), 0, 0);
+                // Data is already Annex-B, feed directly to transcoder
+                src_ptr->transcoder->feed(data, size, 0, 0);
             } else {
-                // H.264 — direct pass-through
-                std::lock_guard<std::mutex> lock(src_ptr->sessions_mtx);
-                for (auto &sess : src_ptr->sessions) {
-                    sess->sendNal(data, size, is_keyframe);
+                // H.264 — direct pass-through (whole Annex-B frame)
+                if (is_keyframe) {
+                    std::string types;
+                    for (size_t i = 0; i+4 < size; i++)
+                        if (data[i]==0 && data[i+1]==0 && data[i+2]==0 && data[i+3]==1)
+                            types += std::to_string(data[i+4] & 0x1F) + " ";
+                    std::cout << "[H264] Keyframe NALs: " << types << "size=" << size << "\n";
+                }
+
+                const auto &extra = src_ptr->reader->extradata();
+                if (is_keyframe && !extra.empty()) {
+                    std::vector<uint8_t> buf(extra.size() + size);
+                    memcpy(buf.data(), extra.data(), extra.size());
+                    memcpy(buf.data() + extra.size(), data, size);
+                    std::lock_guard<std::mutex> lock(src_ptr->sessions_mtx);
+                    for (auto &sess : src_ptr->sessions)
+                        sess->sendFrame(buf.data(), buf.size(), true);
+                } else {
+                    std::lock_guard<std::mutex> lock(src_ptr->sessions_mtx);
+                    for (auto &sess : src_ptr->sessions)
+                        sess->sendFrame(data, size, is_keyframe);
                 }
             }
         });
