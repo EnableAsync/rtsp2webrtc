@@ -89,3 +89,26 @@ web/
 - 多路 RTSP 源，URL 在请求中指定
 - 多观众共享同一 RTSP 连接
 - H.264 直通，H.265 自动转码为 H.264
+
+## 测试方法
+1. 启动 rtsp server
+```bash
+./mediamtx
+```
+
+2. 推送视频
+```bash
+ffmpeg -re -stream_loop -1 -i test.mp4 \
+    -c:v libx264 \
+    -b:v 1000k -maxrate 1000k -bufsize 2000k \
+    -g 30 \
+    -preset ultrafast -tune zerolatency \
+    -c:a copy \
+    -f rtsp \
+    rtsp://localhost:8554/mystream
+```
+
+3. 测试
+```bash
+./build/rtsp2webrtc 8080
+```

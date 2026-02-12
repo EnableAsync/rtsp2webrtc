@@ -37,4 +37,5 @@ private:
     uint64_t frame_count_ = 0;
     bool got_keyframe_ = false;
     std::mutex send_mtx_;
+    int64_t last_rtsp_pts_ = -1;
 };
